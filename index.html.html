@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Falling</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@1,300&family=Inter:wght@400;500&display=swap">
+<style>
+:root{--bg:#06141a;--water:#a6e6e2;--foam:#f2fbf7;--ink:#d8efec;--dim:#7fa9a8;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+html,body{height:100%;margin:0;background:var(--bg);transition:background .6s;color:var(--ink);font-family:Inter,system-ui,sans-serif;overflow:hidden}
+#cam{position:fixed;inset:0;width:100%;height:100%;object-fit:cover;transform:scaleX(-1);opacity:0;transition:opacity .4s;filter:grayscale(1) contrast(1.1)}
+#cam.on{opacity:.22}
+canvas{position:fixed;inset:0;width:100%;height:100%;display:block}
+#intro{position:fixed;inset:0;display:flex;flex-direction:column;justify-content:center;align-items:flex-start;padding:8vw;gap:18px;background:linear-gradient(90deg,rgba(6,20,26,.92) 0%,rgba(6,20,26,.55) 60%,rgba(6,20,26,0) 100%);z-index:3}
+#intro h1{font:italic 300 clamp(40px,8vw,88px)/1 Fraunces,Georgia,serif;margin:0;letter-spacing:-.01em}
+#intro p{max-width:34ch;margin:0;color:var(--dim);line-height:1.5}
+.row{display:flex;gap:12px;flex-wrap:wrap}
+button{font:500 15px Inter,system-ui,sans-serif;color:var(--bg);background:var(--water);border:0;border-radius:999px;padding:12px 22px;cursor:pointer}
+button.alt{background:transparent;color:var(--ink);box-shadow:inset 0 0 0 1px var(--dim)}
+button:focus-visible{outline:2px solid var(--foam);outline-offset:3px}
+#msg{color:#f0c987;min-height:1.2em;font-size:14px;max-width:40ch}
+#bar{position:fixed;left:16px;right:16px;bottom:calc(14px + env(safe-area-inset-bottom,0px));display:none;gap:18px;align-items:center;flex-wrap:wrap;z-index:2;font-size:13px;color:var(--dim)}
+#bar button{padding:7px 14px;font-size:13px}
+.modes{display:flex;gap:6px}
+.modes button{border-radius:0}
+.modes button[aria-pressed=true]{background:var(--water);color:var(--bg);box-shadow:none}
+#bar label{display:flex;gap:8px;align-items:center}
+input[type=range]{accent-color:var(--water)}
+</style>
+</head>
+<body>
+<video id="cam" playsinline muted></video>
+<canvas id="c"></canvas>
+<section id="intro">
+  <h1>Falling</h1>
+  <p>Wave a hand or move your head. Water, snow, leaves or petals part around whatever moves in front of your camera.</p>
+  <div class="row">
+    <button id="go">Start camera</button>
+    <button id="mouse" class="alt">Use mouse or touch</button>
+  </div>
+  <div id="msg" role="status"></div>
+  <p style="font-size:13px">Video is analysed on your device and never leaves it.</p>
+</section>
+<div id="bar">
+  <div class="modes" id="modes">
+    <button class="alt" data-m="water" aria-pressed="true">Water</button>
+    <button class="alt" data-m="snow" aria-pressed="false">Snow</button>
+    <button class="alt" data-m="leaves" aria-pressed="false">Leaves</button>
+    <button class="alt" data-m="petals" aria-pressed="false">Petals</button>
+  </div>
+  <button id="toggle" class="alt">Show camera</button>
+  <label>Sensitivity <input id="sens" type="range" min="8" max="60" value="26"></label>
+  <label>Push <input id="push" type="range" min="1" max="10" value="5"></label>
+</div>
+<script>
+(function(){
+var cv=document.getElementById('c'),ctx=cv.getContext('2d');
+var vid=document.getElementById('cam');
+var W,H,DPR=Math.min(window.devicePixelRatio||1,1.5);
+function resize(){W=innerWidth;H=innerHeight;cv.width=W*DPR;cv.height=H*DPR;ctx.setTransform(DPR,0,0,DPR,0,0);initParticles()}
+// motion grid
+var GW=64,GH=48,m=new Float32Array(GW*GH),prev=null,cur=new Uint8Array(GW*GH);
+var off=document.createElement('canvas');off.width=GW;off.height=GH;
+var octx=off.getContext('2d',{willReadFrequently:true});
+var camOn=false,pointer=false;
+function sampleCam(){
+  if(!camOn||vid.readyState<2)return;
+  // mirror so screen left = user's left
+  octx.save();octx.scale(-1,1);octx.drawImage(vid,-GW,0,GW,GH);octx.restore();
+  var d=octx.getImageData(0,0,GW,GH).data,th=+document.getElementById('sens').value;
+  for(var i=0;i<GW*GH;i++){
+    var l=(d[i*4]*.3+d[i*4+1]*.59+d[i*4+2]*.11);
+    if(prev){var df=Math.abs(l-prev[i]);if(df>th)m[i]=Math.min(1.5,m[i]+.9)}
+    cur[i]=l;
+  }
+  prev=prev||new Float32Array(GW*GH);
+  for(i=0;i<GW*GH;i++)prev[i]=prev[i]*.5+cur[i]*.5;
+}
+function decay(){for(var i=0;i<GW*GH;i++)m[i]*=.86}
+function blur(){ // light 3x3 smoothing so gradients are usable
+  var o=blur.t||(blur.t=new Float32Array(m.length));
+  for(var y=1;y<GH-1;y++)for(var x=1;x<GW-1;x++){
+    var i=y*GW+x;o[i]=(m[i]*4+m[i-1]+m[i+1]+m[i-GW]+m[i+GW])/8}
+  var t=m;m=o;blur.t=t;
+}
+function paintPointer(x,y,r){
+  var cx=x/W*GW,cy=y/H*GH;
+  for(var j=-r;j<=r;j++)for(var i=-r;i<=r;i++){
+    var gx=Math.round(cx+i),gy=Math.round(cy+j);
+    if(gx<0||gy<0||gx>=GW||gy>=GH)continue;
+    if(i*i+j*j<=r*r)m[gy*GW+gx]=Math.min(1.5,m[gy*GW+gx]+.8)}
+}
+var lastP=null;
+function onPtr(e){
+  if(!pointer)return;
+  var x=e.clientX,y=e.clientY;
+  if(lastP){var dx=x-lastP[0],dy=y-lastP[1],n=Math.max(1,Math.ceil(Math.hypot(dx,dy)/14));
+    for(var k=0;k<=n;k++)paintPointer(lastP[0]+dx*k/n,lastP[1]+dy*k/n,4)}
+  lastP=[x,y];
+}
+addEventListener('pointermove',onPtr);
+addEventListener('pointerup',function(){lastP=null});
+// modes
+var MODES={
+ water:{bg:'#06141a',g:.12,term:7,sway:0,band:true,den:380,max:5000,reach:3,look:2,force:1,thr:.02},
+ snow:{bg:'#0b1624',g:.012,term:1.5,sway:.02,den:1800,max:1200,band:true,reach:2,look:1,force:.3,thr:.14},
+ leaves:{bg:'#170f08',g:.014,term:1.7,sway:.05,den:4200,max:480,band:true,reach:2,look:1,force:.3,thr:.14},
+ petals:{bg:'#190e17',g:.012,term:1.4,sway:.04,den:2600,max:850,band:true,reach:2,look:1,force:.3,thr:.14}
+};
+var LEAF=['#c8501e','#e08a1e','#a63a14','#d9b13a','#7a8a2a','#8a3b12'];
+var PET=['#f7b6c8','#fbe3ea','#e9a0d8','#ffd9a0','#ff8f8f','#c9a6f0','#fff1b8','#9fd8f0'];
+var mode='water',MD=MODES.water,P=[],N=0,T=0;
+function spawn(p,top){
+  p.x=MD.band?W*(.18+Math.random()*.64):Math.random()*W;
+  p.y=top?-10-Math.random()*60:Math.random()*H;
+  p.side=Math.random()<.5?-1:1;
+  p.ph=Math.random()*6.28;p.rot=Math.random()*6.28;p.vr=(Math.random()-.5)*.08;
+  if(mode==='water'){p.vx=(Math.random()-.5)*.3;p.vy=2+Math.random()*3;p.s=.6+Math.random()*1.3;p.a=.35+Math.random()*.55}
+  else{p.vx=(Math.random()-.5)*.4;p.vy=.3+Math.random()*.8;p.a=.6+Math.random()*.4;
+    if(mode==='snow')p.s=1+Math.random()*2.4;
+    else if(mode==='leaves'){p.s=6+Math.random()*6;p.col=LEAF[Math.random()*LEAF.length|0]}
+    else{p.s=4+Math.random()*4;p.col=PET[Math.random()*PET.length|0]}}
+}
+function initParticles(){
+  N=Math.min(MD.max,Math.round(W*H/MD.den));
+  if(matchMedia('(prefers-reduced-motion: reduce)').matches)N=Math.round(N/3);
+  P=[];for(var i=0;i<N;i++){var p={};spawn(p,false);P.push(p)}
+}
+function setMode(n){
+  mode=n;MD=MODES[n];
+  document.documentElement.style.setProperty('--bg',MD.bg);
+  [].forEach.call(document.querySelectorAll('#modes button'),function(b){b.setAttribute('aria-pressed',b.dataset.m===n)});
+  initParticles();
+}
+document.getElementById('modes').addEventListener('click',function(e){var b=e.target.closest('button');if(b)setMode(b.dataset.m)});
+function mAt(x,y){
+  x|=0;y|=0;if(x<0)x=0;if(y<0)y=0;if(x>=GW)x=GW-1;if(y>=GH)y=GH-1;
+  return m[y*GW+x]}
+function drawP(p){
+  if(mode==='water'){
+    var sp=Math.min(1,Math.abs(p.vy)/6);
+    ctx.strokeStyle='rgba(166,230,226,'+(p.a*(.6+.4*sp)).toFixed(2)+')';
+    ctx.lineWidth=p.s;ctx.beginPath();ctx.moveTo(p.x,p.y);ctx.lineTo(p.x-p.vx*1.8,p.y-p.vy*2.2);ctx.stroke();return}
+  if(mode==='snow'){
+    ctx.fillStyle='rgba(240,247,255,'+p.a.toFixed(2)+')';
+    ctx.beginPath();ctx.arc(p.x,p.y,p.s,0,6.283);ctx.fill();return}
+  var fl=.25+.75*Math.abs(Math.cos(p.ph));
+  ctx.save();ctx.translate(p.x,p.y);ctx.rotate(p.rot);ctx.scale(1,fl);
+  ctx.fillStyle=p.col;ctx.globalAlpha=p.a;ctx.beginPath();
+  if(mode==='leaves'){
+    ctx.ellipse(0,0,p.s,p.s*.45,0,0,6.283);ctx.fill();
+    ctx.globalAlpha=.35;ctx.strokeStyle='#000';ctx.lineWidth=.8;
+    ctx.beginPath();ctx.moveTo(-p.s,0);ctx.lineTo(p.s,0);ctx.stroke();
+  }else{
+    ctx.ellipse(0,0,p.s*.85,p.s*.5,0,0,6.283);ctx.fill();
+  }
+  ctx.restore();
+}
+function frame(){
+  sampleCam();blur();blur();
+  T+=1;
+  var k=+document.getElementById('push').value*.2;
+  ctx.clearRect(0,0,W,H);ctx.lineCap='round';
+  for(var i=0;i<N;i++){
+    var p=P[i],cx=p.x/W*GW,cy=p.y/H*GH;
+    if(cx>0&&cx<GW&&cy>-2&&cy<GH){
+      // look slightly below so particles are steered before they hit the area
+      var R=MD.reach,L=MD.look,here=mAt(cx,cy),f=Math.max(here,mAt(cx,cy+L));
+      if(f>MD.thr){
+        var gx=(mAt(cx-R,cy)-mAt(cx+R,cy))+(mAt(cx-R,cy+L)-mAt(cx+R,cy+L));
+        // sideways only: directly above the centre the gradient is ~0, so use a per-particle side
+        p.vx+=(gx*k+p.side*f*k*.35)*MD.force;
+        if(here>.2)p.vy*=1-Math.min(.25,here*.1);
+      }
+    }
+    if(mode!=='water'){
+      p.ph+=.05;p.rot+=p.vr+p.vx*.02;
+      p.vx+=Math.sin(T*.02+p.ph*2)*MD.sway;
+    }
+    p.vy+=MD.g;
+    if(p.vy>MD.term)p.vy=MD.term;
+    if(p.vx>6)p.vx=6;else if(p.vx<-6)p.vx=-6;
+    p.vx*=mode==='water'?.955:.97;p.vy*=mode==='water'?.99:.995;
+    p.x+=p.vx;p.y+=p.vy;
+    if(p.y>H+20||p.x<-30||p.x>W+30)spawn(p,true);
+    drawP(p);
+  }
+  if(mode==='water'){
+    var g=ctx.createLinearGradient(0,H*.86,0,H);
+    g.addColorStop(0,'rgba(242,251,247,0)');g.addColorStop(1,'rgba(242,251,247,.18)');
+    ctx.fillStyle=g;ctx.fillRect(0,H*.86,W,H*.14);
+  }
+  decay();
+  requestAnimationFrame(frame);
+}
+function enter(){
+  document.getElementById('intro').style.display='none';
+  document.getElementById('bar').style.display='flex';
+}
+var msg=document.getElementById('msg');
+document.getElementById('go').onclick=function(){
+  msg.textContent='';
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){
+    msg.textContent='This browser or frame blocks camera access. Try the mouse option, or open the page in its own tab.';return}
+  navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:640},height:{ideal:480}},audio:false})
+  .then(function(s){
+    vid.srcObject=s;return vid.play()
+  }).then(function(){
+    camOn=true;pointer=true;enter();
+  }).catch(function(e){
+    msg.textContent=(e&&e.name==='NotAllowedError')
+      ?'Camera access was blocked. Allow it in your browser, or use the mouse option.'
+      :'No usable camera found. Use the mouse option instead.';
+  });
+};
+document.getElementById('mouse').onclick=function(){pointer=true;enter()};
+document.getElementById('toggle').onclick=function(){
+  var on=vid.classList.toggle('on');
+  this.textContent=on?'Hide camera':'Show camera'};
+addEventListener('resize',resize);
+resize();
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
